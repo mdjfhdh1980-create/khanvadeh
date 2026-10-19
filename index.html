@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>خانواده</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Tahoma,Arial;background:#edf6ff;color:#12304a}
+button,input{font:inherit}.screen{min-height:100vh;display:grid;place-items:center;padding:18px}
+.card{width:min(430px,100%);background:#fff;border-radius:24px;padding:28px;box-shadow:0 15px 50px #0b66b520}
+h1{margin:0 0 8px;color:#087cf5}.muted{color:#6b8297}.field{width:100%;padding:13px;margin:8px 0;border:1px solid #d5e6f5;border-radius:13px;outline:0}.primary{width:100%;padding:13px;border:0;border-radius:13px;background:#087cf5;color:#fff;cursor:pointer;margin-top:8px}.link{color:#087cf5;cursor:pointer;text-align:center;margin-top:15px}
+.app{height:100vh;max-width:1100px;margin:auto;background:#fff;display:flex;overflow:hidden}.side{width:330px;background:#f5faff;border-left:1px solid #dcebf7}.brand{padding:22px;background:linear-gradient(135deg,#087cf5,#00a7ff);color:#fff}.brand h2{margin:0}.member{padding:18px;border-bottom:1px solid #e2eef7}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#25b36a;margin-left:7px}.main{flex:1;display:flex;flex-direction:column}.head{padding:18px 22px;border-bottom:1px solid #e0edf8}.messages{flex:1;overflow:auto;padding:22px;background:#f2f9ff}.msg{max-width:70%;padding:11px 14px;border-radius:17px;background:#fff;margin:10px 0;box-shadow:0 2px 9px #145a8a12}.msg.mine{margin-right:auto;background:#087cf5;color:#fff}.who{font-size:11px;font-weight:bold;opacity:.7;margin-bottom:5px}.time{font-size:9px;opacity:.6;margin-top:5px}.composer{display:flex;gap:9px;padding:13px;border-top:1px solid #e0edf8}.composer input{flex:1;border:1px solid #d5e6f5;border-radius:15px;padding:13px;outline:0}.send{border:0;border-radius:14px;background:#087cf5;color:#fff;padding:0 20px}.hidden{display:none!important}
+@media(max-width:650px){.side{width:90px}.brand h2{font-size:14px}.member div:last-child{display:none}.member{text-align:center}.msg{max-width:85%}}
+</style></head>
+<body>
+<div id="auth" class="screen"><div class="card">
+<h1>خانواده 💙</h1><p class="muted">پیام‌رسان خصوصی خانواده</p>
+<div id="login"><input id="lu" class="field" placeholder="نام کاربری"><input id="lp" class="field" type="password" placeholder="رمز عبور"><button class="primary" onclick="login()">ورود</button><div class="link" onclick="showReg()">ساخت حساب جدید</div></div>
+<div id="reg" class="hidden"><input id="rn" class="field" placeholder="نام شما"><input id="ru" class="field" placeholder="نام کاربری"><input id="rp" class="field" type="password" placeholder="رمز عبور"><button class="primary" onclick="register()">ثبت‌نام</button><div class="link" onclick="showLogin()">قبلاً حساب دارم</div></div>
+<p id="err" style="color:#d33"></p>
+</div></div>
+<div id="app" class="app hidden">
+<aside class="side"><div class="brand"><h2>خانواده</h2><small>گروه خانوادگی</small></div><div class="member"><span class="dot"></span><b id="me"></b><div class="muted">شما</div></div><div class="member">👨‍👩‍👧‍👦 <b>گروه خانواده</b><div class="muted">چت مشترک اعضای خانواده</div></div></aside>
+<main class="main"><header class="head"><b>گروه خانواده</b><div class="muted">پیام‌ها برای اعضای آنلاین به‌صورت لحظه‌ای ارسال می‌شوند</div></header><section id="messages" class="messages"></section>
+<form class="composer" onsubmit="send(event)"><input id="text" placeholder="پیام خود را بنویسید..." autocomplete="off"><button class="send">ارسال</button></form></main>
+</div>
+<script>
+let token=localStorage.getItem("familyToken"), me=null, socket=null;
+const $=id=>document.getElementById(id);
+function showReg(){ $("login").classList.add("hidden");$("reg").classList.remove("hidden");$("err").textContent=""}
+function showLogin(){ $("reg").classList.add("hidden");$("login").classList.remove("hidden");$("err").textContent=""}
+async function api(url,body){
+ const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+ const d=await r.json(); if(!r.ok) throw Error(d.error||"خطا"); return d;
+}
+async function register(){try{let d=await api("/api/register",{name:$("rn").value,username:$("ru").value,password:$("rp").value});token=d.token;localStorage.setItem("familyToken",token);start(d.user)}catch(e){$("err").textContent=e.message}}
+async function login(){try{let d=await api("/api/login",{username:$("lu").value,password:$("lp").value});token=d.token;localStorage.setItem("familyToken",token);start(d.user)}catch(e){$("err").textContent=e.message}}
+async function start(user){
+ me=user;$("me").textContent=user.name;$("auth").classList.add("hidden");$("app").classList.remove("hidden");
+ const r=await fetch("/api/messages",{headers:{Authorization:token}});(await r.json()).forEach(add);
+ socket=io({auth:{token}});
+ socket.on("newMessage",add);
+ socket.on("connect_error",()=>{$("err").textContent="اتصال به سرور برقرار نشد";});
+}
+function add(m){let d=document.createElement("div");d.className="msg "+(m.userId===me.id?"mine":"");d.innerHTML='<div class="who">'+esc(m.name)+'</div>'+esc(m.text)+'<div class="time">'+new Date(m.createdAt).toLocaleTimeString("fa-IR",{hour:"2-digit",minute:"2-digit"})+'</div>';$("messages").appendChild(d);$("messages").scrollTop=$("messages").scrollHeight}
+function send(e){e.preventDefault();let t=$("text").value.trim();if(t&&socket){socket.emit("sendMessage",t);$("text").value=""}}
+function esc(s){return s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
+if(token){fetch("/api/me",{headers:{Authorization:token}}).then(r=>r.ok?r.json():Promise.reject()).then(start).catch(()=>{localStorage.removeItem("familyToken")})}
+</script></body></html>
