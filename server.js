@@ -9,102 +9,153 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 const PORT = process.env.PORT || 3000;
-const DB = path.join(__dirname, 'data.json');
+const DB_PATH = path.join(__dirname, 'data.json');
 const onlineUsers = new Map();
 
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.json({ limit: '1mb' }));
 app.use(express.static(__dirname));
 
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+const defaultData = { users: [], messages: [] };
 
-function db() {
+function readDb() {
   try {
-    return JSON.parse(fs.readFileSync(DB, 'utf8'));
+    const raw = fs.readFileSync(DB_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    return {
+      users: Array.isArray(parsed.users) ? parsed.users : [],
+      messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+    };
   } catch {
-    return { users: [], messages: [] };
+    fs.writeFileSync(DB_PATH, JSON.stringify(defaultData, null, 2));
+    return { ...defaultData };
   }
 }
 
-function save(x) {
-  fs.writeFileSync(DB, JSON.stringify(x, null, 2));
+function saveDb(data) {
+  fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
 }
 
-function hash(x) {
-  return crypto.createHash('sha256').update(String(x)).digest('hex');
+function hash(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex');
 }
 
-function token() {
+function generateToken() {
   return crypto.randomBytes(24).toString('hex');
 }
 
-function emitPresence() {
-  const users = [...onlineUsers.values()].map(({ id, name, username }) => ({ id, name, username }));
-  io.to('family').emit('presence', users);
-}
+function authRequired(req, res, next) {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'ورود لازم است' });
 
-app.post('/api/register', (req, res) => {
-  const { name, username, password } = req.body || {};
-  if (!name || !username || !password) return res.status(400).json({ error: 'همه موارد را پر کنید' });
+  const user = readDb().users.find((u) => u.token === token);
+  if (!user) return res.status(401).json({ error: 'توکن نامعتبر است' });
 
-  const d = db();
-  const u = String(username).trim().toLowerCase();
-  if (d.users.some(x => x.username === u)) return res.status(409).json({ error: 'این نام کاربری قبلاً استفاده شده' });
-
-  const user = {
-    id: crypto.randomUUID(),
-    name: String(name).trim(),
-    username: u,
-    password: hash(password),
-    token: token(),
-  };
-
-  d.users.push(user);
-  save(d);
-  res.json({ token: user.token, user: { id: user.id, name: user.name, username: user.username } });
-});
-
-app.post('/api/login', (req, res) => {
-  const d = db();
-  const u = String(req.body?.username || '').trim().toLowerCase();
-  const user = d.users.find(x => x.username === u && x.password === hash(req.body?.password || ''));
-
-  if (!user) return res.status(401).json({ error: 'نام کاربری یا رمز عبور اشتباه است' });
-
-  user.token = token();
-  save(d);
-  res.json({ token: user.token, user: { id: user.id, name: user.name, username: user.username } });
-});
-
-function auth(req, res, next) {
-  const user = db().users.find(x => x.token === req.headers.authorization);
-  if (!user) return res.status(401).json({ error: 'ورود لازم است' });
   req.user = user;
   next();
 }
 
-app.get('/api/me', auth, (req, res) => {
+function emitPresence() {
+  const list = [...onlineUsers.values()].map(({ id, name, username }) => ({ id, name, username }));
+  io.to('family').emit('presence', list);
+}
+
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true, app: 'khanvadeh messenger' });
+});
+
+app.post('/api/register', (req, res) => {
+  const { name, username, password } = req.body || {};
+
+  if (!name || !username || !password) {
+    return res.status(400).json({ error: 'همه فیلدها را پر کنید' });
+  }
+
+  const db = readDb();
+  const cleanName = String(name).trim();
+  const cleanUsername = String(username).trim().toLowerCase();
+
+  if (!cleanName || !cleanUsername || String(password).length < 3) {
+    return res.status(400).json({ error: 'نام و نام‌کاربری معتبر باشد و رمز عبور حداقل 3 کاراکتر باشد' });
+  }
+
+  const exists = db.users.some((user) => user.username === cleanUsername);
+  if (exists) {
+    return res.status(409).json({ error: 'این نام‌کاربری قبلا ثبت شده است' });
+  }
+
+  const user = {
+    id: crypto.randomUUID(),
+    name: cleanName,
+    username: cleanUsername,
+    password: hash(password),
+    token: generateToken(),
+  };
+
+  db.users.push(user);
+  saveDb(db);
+
+  res.json({
+    token: user.token,
+    user: { id: user.id, name: user.name, username: user.username },
+  });
+});
+
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body || {};
+  const cleanUsername = String(username || '').trim().toLowerCase();
+
+  const db = readDb();
+  const user = db.users.find(
+    (entry) => entry.username === cleanUsername && entry.password === hash(password || '')
+  );
+
+  if (!user) {
+    return res.status(401).json({ error: 'نام‌کاربری یا رمز عبور اشتباه است' });
+  }
+
+  user.token = generateToken();
+  saveDb(db);
+
+  res.json({
+    token: user.token,
+    user: { id: user.id, name: user.name, username: user.username },
+  });
+});
+
+app.get('/api/me', authRequired, (req, res) => {
   res.json({ id: req.user.id, name: req.user.name, username: req.user.username });
 });
 
-app.get('/api/messages', auth, (req, res) => {
-  res.json(db().messages.slice(-300));
+app.get('/api/messages', authRequired, (req, res) => {
+  const messages = readDb().messages.slice(-300);
+  res.json(messages);
 });
 
 io.use((socket, next) => {
-  const user = db().users.find(x => x.token === socket.handshake.auth?.token);
-  if (!user) return next(new Error('احراز هویت ناموفق'));
+  const token = socket.handshake.auth?.token;
+  const user = readDb().users.find((entry) => entry.token === token);
+
+  if (!user) {
+    return next(new Error('احراز هویت ناموفق'));
+  }
+
   socket.user = user;
   next();
 });
 
-io.on('connection', socket => {
+io.on('connection', (socket) => {
   socket.join('family');
+
   onlineUsers.set(socket.user.id, {
     id: socket.user.id,
     name: socket.user.name,
     username: socket.user.username,
   });
+
   emitPresence();
 
   socket.on('disconnect', () => {
@@ -112,23 +163,25 @@ io.on('connection', socket => {
     emitPresence();
   });
 
-  socket.on('sendMessage', text => {
-    text = String(text || '').trim();
-    if (!text || text.length > 2000) return;
+  socket.on('sendMessage', (text) => {
+    const messageText = String(text || '').trim();
+    if (!messageText || messageText.length > 2000) return;
 
-    const d = db();
+    const db = readDb();
     const message = {
       id: crypto.randomUUID(),
       userId: socket.user.id,
       name: socket.user.name,
-      text,
+      text: messageText,
       createdAt: new Date().toISOString(),
     };
 
-    d.messages.push(message);
-    save(d);
+    db.messages.push(message);
+    saveDb(db);
     io.to('family').emit('newMessage', message);
   });
 });
 
-server.listen(PORT, () => console.log('Khanvadeh running on ' + PORT));
+server.listen(PORT, () => {
+  console.log(`🚀 Messenger running on http://localhost:${PORT}`);
+});
